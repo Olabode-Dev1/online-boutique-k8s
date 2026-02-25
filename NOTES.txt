@@ -1,0 +1,13 @@
+✅ Online Boutique deployed successfully!
+
+App URL:
+  https://{{ .Values.ingress.host }}
+
+Grafana:
+  https://grafana.yourdomain.com
+
+Check rollout status:
+  kubectl rollout status deployment/frontend -n {{ .Values.global.namespace }}
+
+View all pods:
+  kubectl get pods -n {{ .Values.global.namespace }}

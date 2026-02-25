@@ -1,0 +1,66 @@
+name: Build & Push to ECR
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: online-boutique
+
+permissions:
+  id-token: write   # Required for OIDC authentication
+  contents: read
+
+jobs:
+  build-push:
+    name: Build & Push Images
+    runs-on: ubuntu-latest
+
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      short-sha: ${{ steps.vars.outputs.short-sha }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set short SHA
+        id: vars
+        run: echo "short-sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}   # Set this in GitHub repo secrets
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push frontend image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.vars.outputs.short-sha }}
+        run: |
+          docker build \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY/frontend:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY/frontend:latest \
+            ./src/frontend
+
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY/frontend:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY/frontend:latest
+
+      # Add similar build steps for other custom services you modify.
+      # For unmodified services, the upstream gcr.io images are used directly.
+
+      - name: Image scan summary
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.vars.outputs.short-sha }}
+        run: |
+          echo "✅ Images pushed to ECR:"
+          echo "  $ECR_REGISTRY/$ECR_REPOSITORY/frontend:$IMAGE_TAG"

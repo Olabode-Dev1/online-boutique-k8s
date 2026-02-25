@@ -1,0 +1,113 @@
+name: Deploy to EKS
+
+on:
+  workflow_run:
+    workflows: ["Build & Push to ECR"]
+    types: [completed]
+    branches: [main]
+
+env:
+  AWS_REGION: us-east-1
+  EKS_CLUSTER_NAME: online-boutique
+  HELM_RELEASE: online-boutique
+  HELM_NAMESPACE: online-boutique
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: Helm Deploy
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig for EKS
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ env.AWS_REGION }} \
+            --name ${{ env.EKS_CLUSTER_NAME }}
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: "3.14.0"
+
+      - name: Get ECR registry URL
+        id: ecr
+        run: |
+          ECR_REGISTRY=$(aws ecr describe-repositories \
+            --repository-names online-boutique \
+            --query 'repositories[0].repositoryUri' \
+            --output text | sed 's|/online-boutique||')
+          echo "registry=$ECR_REGISTRY" >> $GITHUB_OUTPUT
+
+      - name: Ensure namespace exists
+        run: |
+          kubectl apply -f helm/online-boutique/templates/rbac.yaml
+
+      - name: Install/upgrade cert-manager (idempotent)
+        run: |
+          helm repo add jetstack https://charts.jetstack.io
+          helm repo update
+          helm upgrade --install cert-manager jetstack/cert-manager \
+            --namespace cert-manager \
+            --create-namespace \
+            --set installCRDs=true \
+            --wait
+
+      - name: Install/upgrade ingress-nginx (idempotent)
+        run: |
+          helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+          helm repo update
+          helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+            --namespace ingress-nginx \
+            --create-namespace \
+            --set controller.service.type=LoadBalancer \
+            --wait
+
+      - name: Install/upgrade sealed-secrets (idempotent)
+        run: |
+          helm repo add sealed-secrets https://bitnami-labs.github.io/sealed-secrets
+          helm repo update
+          helm upgrade --install sealed-secrets sealed-secrets/sealed-secrets \
+            --namespace kube-system \
+            --wait
+
+      - name: Deploy Online Boutique
+        run: |
+          helm upgrade --install ${{ env.HELM_RELEASE }} \
+            ./helm/online-boutique \
+            --namespace ${{ env.HELM_NAMESPACE }} \
+            --create-namespace \
+            -f helm/online-boutique/values.yaml \
+            -f helm/online-boutique/values-prod.yaml \
+            --set global.imageRegistry=${{ steps.ecr.outputs.registry }} \
+            --atomic \
+            --timeout 5m \
+            --wait
+
+      - name: Verify rollout
+        run: |
+          kubectl rollout status deployment/frontend \
+            -n ${{ env.HELM_NAMESPACE }} \
+            --timeout=3m
+          echo "✅ Deployment successful"
+
+      - name: Print app URL
+        run: |
+          LB=$(kubectl get svc ingress-nginx-controller \
+            -n ingress-nginx \
+            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          echo "🌐 Load Balancer: $LB"
+          echo "🔗 App URL: https://shop.yourdomain.com"
