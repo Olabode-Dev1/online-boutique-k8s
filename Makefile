@@ -15,6 +15,17 @@ help: ## Show available commands
 # ---------------------------------------------------------------
 # Terraform
 # ---------------------------------------------------------------
+bootstrap-state: ## Create S3 + DynamoDB for Terraform remote state (run once first)
+	cd infra && terraform init -backend=false
+	cd infra && terraform apply \
+		-target=aws_s3_bucket.terraform_state \
+		-target=aws_s3_bucket_versioning.terraform_state \
+		-target=aws_s3_bucket_server_side_encryption_configuration.terraform_state \
+		-target=aws_s3_bucket_public_access_block.terraform_state \
+		-target=aws_dynamodb_table.terraform_lock
+	@echo ""
+	@echo "2705 Done. Uncomment the backend block in infra/main.tf then run: make init"
+
 init: ## Initialise Terraform
 	cd infra && terraform init
 
